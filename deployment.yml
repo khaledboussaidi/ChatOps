@@ -1,0 +1,37 @@
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: vynd-chatops
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: vynd-chatops
+
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vynd-chatops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vynd-chatops
+  template:
+    metadata:
+      labels:
+        app: vynd-chatops
+    spec:
+      containers:
+        - name: vynd-chatops
+          image: boussaidi/vynd-chatops:latest
+          ports:
+            - name: http
+              containerPort: 8080
