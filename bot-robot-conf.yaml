@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bot-access-robot
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bot-access-secret
+  annotations:
+    kubernetes.io/service-account.name: bot-access-robot
+type: kubernetes.io/service-account-token
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: bot-access-role
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list","log"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: bot-rolebinding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: bot-access-robot
+  namespace: default
+roleRef:
+  kind: Role
+  name: bot-access-role
+  apiGroup: rbac.authorization.k8s.io

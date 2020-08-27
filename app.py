@@ -1,31 +1,99 @@
-import os
+import json
 import logging
-from flask import Flask
+import os
+
+import requests
+import yaml
+from kubernetes import client, config
+from utils import HELP, LIST, POD, DEPLOYMENT, SERVICE, LOG
+import auth
+import boto3
+from flask import Flask,request
 from slack import WebClient
 from slackeventsapi import SlackEventAdapter
 from chatBot import ChatBot
 
 app = Flask(__name__)
+
+KUBE_FILEPATH = '/tmp/kubeconfig'
+REGION = 'eu-west-1'
+BOT_TOKEN = 'xoxb-1304583701447-1343214786064-iriF3PKCGGxvmwKQybe9ftqt'
+K8S_TOKEN="eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJkZWZhdWx0Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9zZWNyZXQubmFtZSI6ImJvdC1hY2Nlc3Mtcm9ib3QtdG9rZW4teHMyNGQiLCJrdWJlcm5ldGVzLmlvL3NlcnZpY2VhY2NvdW50L3NlcnZpY2UtYWNjb3VudC5uYW1lIjoiYm90LWFjY2Vzcy1yb2JvdCIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6Ijg5OGU3OGQ5LWZlOGEtNDg5Ni05NjQzLTM2Nzc4MWRkMjcyZiIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpkZWZhdWx0OmJvdC1hY2Nlc3Mtcm9ib3QifQ.g1ctjFFS6mVnL5i5x3TIZqAAOOmDhKPfoAJ_607xH3PIhAMHF4VPEH-MnYvbuQyx4P5g6ztdG1to7VTupZhvHz2jE9ePcq-XpkwA22q5wbB7VuLp2n192scUzcA1LN9hXNZDeiB53_QDHUQJlIVGKXI0B2Lf8RDAcU_YtJjdn-InOJFKSVh2PgCSlNT3jDfr4vzFpFhP75iBgADyexsjxZlYJO_j_rlmvwDAyjK2_1IyhrNZDWuYT37PKVfHEMEQCaKa7bnJnqsk60yw2cMnZmS611yGddgX3nwQbamN2QkmsL8MOjP7DK8aJ2vBUn5o6riwuBakmTl_gLF1esE3DQ"
+CLUSTER_NAME="vynd-monitoring"
+MAX_LOG_LENGTH = 200
+SLACK_URL = "https://slack.com/api/chat.postMessage"
+
 SLACK_EVENTS_TOKEN="f05b22b4a1e23fd0cd53fe19bc31365b"
 slack_events_adapter = SlackEventAdapter(SLACK_EVENTS_TOKEN, "/slack/events", app)
 
-SLACK_TOKEN='xoxb-1304583701447-1343214786064-zmVH4hBms1ZTQgD2RdW8Fvqj'
+SLACK_TOKEN='xoxb-1304583701447-1343214786064-iriF3PKCGGxvmwKQybe9ftqt'
 slack_web_client = WebClient(token=SLACK_TOKEN)
 
-def flip_coin(channel):
+
+"""create kub config """
+if not os.path.exists(KUBE_FILEPATH):
+    kube_content = dict()
+    # Get data from EKS API
+    eks_api = boto3.client('eks', region_name=REGION)
+    cluster_info = eks_api.describe_cluster(name=CLUSTER_NAME)
+    certificate = cluster_info['cluster']['certificateAuthority']['data']
+    endpoint = cluster_info['cluster']['endpoint']
+
+    # Generating kubeconfig
+    kube_content = dict()
+
+    kube_content['apiVersion'] = 'v1'
+    kube_content['clusters'] = [
+        {
+            'cluster':
+                {
+                    'server': endpoint,
+                    'certificate-authority-data': certificate
+                },
+            'name': 'kubernetes'
+
+        }]
+
+    kube_content['contexts'] = [
+        {
+            'context':
+                {
+                    'cluster': 'kubernetes',
+                    'user': 'aws'
+                },
+            'name': 'aws'
+        }]
+
+    kube_content['current-context'] = 'aws'
+    kube_content['Kind'] = 'config'
+    kube_content['users'] = [
+        {
+            'name': 'aws',
+            'user': ['lambda']
+        }]
+
+    # Write kubeconfig
+    with open(KUBE_FILEPATH, 'w') as outfile:
+        yaml.dump(kube_content, outfile, default_flow_style=False)
+
+def flip_coin(channel,text):
 
     coin_bot = ChatBot(channel)
 
-    message = coin_bot.get_message_payload()
+    message = coin_bot.get_message_payload(text)
 
     slack_web_client.chat_postMessage(**message)
 
 
 
 @slack_events_adapter.on("message")
+#@app.route('/post',methods=['POST'])
 def message(payload):
-
-    event = payload.get("event", {})
+    #print(request.json)
+    #event = payload.get("event", {})
+    lambda_handler(payload)
+    #return "ok",200
+    """"event = payload.get("event", {})
 
     text = event.get("text")
 
@@ -35,8 +103,226 @@ def message(payload):
         channel_id = event.get("channel")
 
 
-        return flip_coin(channel_id)
+        return flip_coin(channel_id,str(payload))"""""
 
+"""event function"""
+
+
+
+
+def lambda_handler(payload):
+    data = payload
+
+    if "challenge" in data:
+        return {
+            'statusCode': 200,
+            'body': json.dumps(data['challenge'])
+        }
+
+    slack_event = data.get("event", {})
+    channel_id = slack_event.get("channel")
+
+    print(slack_event)
+
+    if "bot_id" in slack_event:
+        logging.warn("Ignore bot event")
+        return
+    else:
+        text = slack_event.get("text")
+
+        tokens = cleanInput(text).split()
+        action = tokens[0]
+        print("********************************************")
+        print(action)
+        print("********************************************")
+
+        if action.upper() in HELP:
+            return sendHelpMessage(channel_id, True)
+
+        v1, v1_beta = k8s_configuration()
+
+        if action.upper() in LIST:
+            if len(tokens) > 1:
+                element = tokens[1]
+                if element.upper() in POD:
+                    # Get all the pods
+                    ret = v1.list_namespaced_pod("default")
+                    return sendListOfPods(channel_id, ret.items)
+
+                if element.upper() in DEPLOYMENT:
+                    # Get all the pods
+                    ret = v1_beta.list_namespaced_deployment("default")
+                    return sendListOfDeployements(channel_id, ret.items)
+
+                if element.upper() in SERVICE:
+                    # Get all the pods
+                    ret = v1.list_namespaced_service("default")
+                    return sendListOfServices(channel_id, ret.items)
+
+        if action.upper() in LOG:
+            if len(tokens) > 1:
+                pod_id = tokens[1]
+                response = v1.read_namespaced_pod_log(pod_id, 'default')
+                print(len(response))
+                return sendLogsOfPod(channel_id, response[:int(MAX_LOG_LENGTH)])
+        return sendHelpMessage(channel_id, False)
+"""message type """
+def sendHelpMessage(channel_id, indr):
+    help_items = [
+        "• *list <elements>: * pour afficher la liste des élements de Kubernetes (pods, services, deployments, ...)",
+        "• *describe <element> :* pour décrire un élement de Kubernetes",
+        "• *logs <pod> :* pour afficher les journaux d'un pod",
+        "• *scale <deployement> <replicas> :* pour modifier le nombre des machines d'un deployment",
+        "• *deploy <deployement> :* pour déployer la dernière version de l'image Docker d'un deployment",
+        "• *restart <deployement> :* pour redémarrer un deployment"
+    ]
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                            "" if indr else "J'ai pas compris, ") + "Vous pouvez utiliser l'une des commandes suivantes :\n" + "\n".join(
+                    help_items)
+            }
+        }
+    ]
+
+    return sendMessageToSlack(channel_id, "Help" if indr else "Ops", blocks)
+
+
+def sendLogsOfPod(channel_id, log_str):
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "```" + log_str + "```"
+            }
+        }]
+
+    return sendMessageToSlack(channel_id, "Log pod", blocks)
+
+
+def sendListOfPods(channel_id, list_items):
+    result = ["Etat | Nombre de containers | Namespace | Nom",
+              "--------------------------------------------------------------------------------"]
+    for i in list_items:
+        result.append(
+            "%4s | %20s | %9s | %s" % (i.status.phase, len(i.spec.containers), i.metadata.namespace, i.metadata.name))
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Liste des *pods* :"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "```" + "\n".join(result) + "```"
+            }
+        }]
+
+    return sendMessageToSlack(channel_id, "Liste des pods", blocks)
+
+
+def sendListOfDeployements(channel_id, list_items):
+    result = ["Nombre de pods | Namespace | Nom",
+              "--------------------------------------------------------------------------------"]
+    for i in list_items:
+        result.append(
+            "%14s | %9s | %s" % (i.spec.replicas, i.metadata.namespace, i.metadata.name))
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Liste des *depolyments* :"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "```" + "\n".join(result) + "```"
+            }
+        }]
+
+    return sendMessageToSlack(channel_id, "Liste des deployments", blocks)
+
+
+def sendListOfServices(channel_id, list_items):
+    result = ["%12s | Nom" % "Type",
+              "--------------------------------------------------------------------------------"]
+    for i in list_items:
+        result.append(
+            "%12s | %s" % (i.spec.type, i.metadata.name))
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Liste des *services* :"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "```" + "\n".join(result) + "```"
+            }
+        }]
+
+    return sendMessageToSlack(channel_id, "Liste des services", blocks)
+
+
+def sendMessageToSlack(channel_id, text, blocks):
+    requests.post(SLACK_URL, {
+        'token': BOT_TOKEN,
+        'channel': channel_id,
+        'text': text,
+        'blocks': json.dumps(blocks) if blocks else None
+    }).json()
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps(
+            'OK'
+        )
+    }
+"""kubernetes confiq and auth"""
+def k8s_configuration():
+    eks = auth.EKSAuth(cluster_id=CLUSTER_NAME,region='eu-west-1')
+    token = eks.get_token()
+
+    # Configure
+    config.load_kube_config(KUBE_FILEPATH)
+    configuration = client.Configuration()
+    configuration.api_key['authorization'] = K8S_TOKEN
+    configuration.api_key_prefix['authorization'] = 'Bearer'
+    # API
+    api = client.ApiClient(configuration)
+    v1 = client.CoreV1Api(api)
+    v1_beta = client.AppsV1beta1Api(api)
+    return v1, v1_beta
+"""clean text """
+def cleanInput(text):
+    returned_text = text.replace("mta3 el ", "")
+    returned_text = returned_text.replace("mta3 ", "")
+    returned_text = returned_text.replace("of the ", "")
+    returned_text = returned_text.replace("of  ", "")
+    returned_text = returned_text.replace("de  ", "")
+    returned_text = returned_text.replace("des  ", "")
+    returned_text = returned_text.replace("la  ", "")
+    returned_text = returned_text.replace("le  ", "")
+    return returned_text
 if __name__ == "__main__":
     logger = logging.getLogger()
 

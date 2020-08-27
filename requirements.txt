@@ -1,3 +1,5 @@
 flask
 slackclient
 slackeventsapi
+kubernetes
+boto3
