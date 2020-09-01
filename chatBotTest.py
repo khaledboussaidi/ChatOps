@@ -1,7 +1,7 @@
 from slack import WebClient
 from chatBot import ChatBot
 import os
-token = 'xoxb-1304583701447-1343214786064-76zkS4w9KxSMK6h9AdBffuLU'
+token = '********'
 
 # Create a slack client
 slack_web_client = WebClient(token=token)
