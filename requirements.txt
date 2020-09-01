@@ -2,4 +2,5 @@ flask
 slackclient
 slackeventsapi
 kubernetes
-boto3
+boto3==1.14.49
+botocore

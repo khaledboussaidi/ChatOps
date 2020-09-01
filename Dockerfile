@@ -1,5 +1,5 @@
 # using a python small basic image
-FROM python:3.6
+FROM python:3.8
 # exposing our stream port in docker internal network
 EXPOSE 8080
 # creates a dir for our application

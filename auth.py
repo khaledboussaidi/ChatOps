@@ -8,7 +8,7 @@ from botocore.signers import RequestSigner
 class EKSAuth(object):
 
     METHOD = 'GET'
-    EXPIRES = 60
+    EXPIRES = 1000
     EKS_HEADER = 'x-k8s-aws-id'
     EKS_PREFIX = 'k8s-aws-v1.'
     STS_URL = 'sts.amazonaws.com'
@@ -29,7 +29,7 @@ class EKSAuth(object):
 
         signer = RequestSigner(
             service_id,
-            session.region_name,
+            self.region,
             'sts',
             'v4',
             session.get_credentials(),
@@ -48,10 +48,9 @@ class EKSAuth(object):
 
         signed_url = signer.generate_presigned_url(
             params,
-            region_name=session.region_name,
             expires_in=self.EXPIRES,
             operation_name='',
-
+            region_name=self.region,
         )
 
         return (

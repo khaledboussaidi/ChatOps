@@ -1,11 +1,13 @@
+import datetime
 import json
 import logging
 import os
+from json import JSONEncoder
 
 import requests
 import yaml
 from kubernetes import client, config
-from utils import HELP, LIST, POD, DEPLOYMENT, SERVICE, LOG
+from utils import HELP, LIST, POD, DEPLOYMENT, SERVICE, LOG, RESTART, DEPLOY, DESCRIBE, SCALE
 import auth
 import boto3
 from flask import Flask,request
@@ -13,20 +15,26 @@ from slack import WebClient
 from slackeventsapi import SlackEventAdapter
 from chatBot import ChatBot
 
+class MyEncoder(JSONEncoder):
+    def default(self, o):
+        if isinstance(o, datetime.date):
+            return dict(year=o.year, month=o.month, day=o.day)
+        else:
+            return o.__dict__
 app = Flask(__name__)
 
 KUBE_FILEPATH = '/tmp/kubeconfig'
 REGION = 'eu-west-1'
-BOT_TOKEN = '*****'
-K8S_TOKEN="******"
+BOT_TOKEN = 'xoxb-1304583701447-1343214786064-76zkS4w9KxSMK6h9AdBffuLU'
+K8S_TOKEN="eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJkZWZhdWx0Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9zZWNyZXQubmFtZSI6ImJvdC1hY2Nlc3Mtcm9ib3QtdG9rZW4teHMyNGQiLCJrdWJlcm5ldGVzLmlvL3NlcnZpY2VhY2NvdW50L3NlcnZpY2UtYWNjb3VudC5uYW1lIjoiYm90LWFjY2Vzcy1yb2JvdCIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6Ijg5OGU3OGQ5LWZlOGEtNDg5Ni05NjQzLTM2Nzc4MWRkMjcyZiIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpkZWZhdWx0OmJvdC1hY2Nlc3Mtcm9ib3QifQ.g1ctjFFS6mVnL5i5x3TIZqAAOOmDhKPfoAJ_607xH3PIhAMHF4VPEH-MnYvbuQyx4P5g6ztdG1to7VTupZhvHz2jE9ePcq-XpkwA22q5wbB7VuLp2n192scUzcA1LN9hXNZDeiB53_QDHUQJlIVGKXI0B2Lf8RDAcU_YtJjdn-InOJFKSVh2PgCSlNT3jDfr4vzFpFhP75iBgADyexsjxZlYJO_j_rlmvwDAyjK2_1IyhrNZDWuYT37PKVfHEMEQCaKa7bnJnqsk60yw2cMnZmS611yGddgX3nwQbamN2QkmsL8MOjP7DK8aJ2vBUn5o6riwuBakmTl_gLF1esE3DQ"
 CLUSTER_NAME="vynd-monitoring"
 MAX_LOG_LENGTH = 200
 SLACK_URL = "https://slack.com/api/chat.postMessage"
 
-SLACK_EVENTS_TOKEN="*****"
+SLACK_EVENTS_TOKEN="f05b22b4a1e23fd0cd53fe19bc31365b"
 slack_events_adapter = SlackEventAdapter(SLACK_EVENTS_TOKEN, "/slack/events", app)
 
-SLACK_TOKEN='*****'
+SLACK_TOKEN='xoxb-1304583701447-1343214786064-76zkS4w9KxSMK6h9AdBffuLU'
 slack_web_client = WebClient(token=SLACK_TOKEN)
 
 
@@ -139,7 +147,7 @@ def lambda_handler(payload):
         if action.upper() in HELP:
             return sendHelpMessage(channel_id, True)
 
-        v1, v1_beta = k8s_configuration()
+        v1, v1_beta,app_v1, v1_beta2 = k8s_configuration()
 
         if action.upper() in LIST:
             if len(tokens) > 1:
@@ -165,6 +173,73 @@ def lambda_handler(payload):
                 response = v1.read_namespaced_pod_log(pod_id, 'default')
                 print(len(response))
                 return sendLogsOfPod(channel_id, response[:int(MAX_LOG_LENGTH)])
+        if action.upper() in RESTART:
+            if len(tokens) > 1:
+                dep_id = tokens[1]
+                ret = v1_beta.list_namespaced_deployment("default")
+                pod_list = v1.list_namespaced_pod("default")
+                couter=0
+                for deployment in ret.items:
+                    if dep_id==deployment.metadata.name:
+                        couter+=1
+                        for pod in pod_list.items:
+                            if dep_id in pod.metadata.name:
+                                response = v1.delete_namespaced_pod(name=pod.metadata.name, namespace='default')
+                        return sendDeletedDeployment(channel_id,"Restarted deployment: "+dep_id)
+                if couter==0:
+                    return sendDeletedDeployment(channel_id, "deployment "+dep_id+ " n'existe pas")
+        if action.upper() in DEPLOY:
+            if len(tokens) > 1:
+                dep_id = tokens[1]
+                try:
+                    api_response = app_v1.read_namespaced_deployment(dep_id, "default")
+                    image = api_response.spec.template.spec.containers[0].image
+                    image = image.split(":")
+                    if len(image) == 2:
+                        image[1] = ""
+                        image = "".join(image)
+
+                    else:
+                        image.append('')
+                        image = "".join(image)
+                    body = api_response
+                    body.spec.template.spec.containers[0].image = image
+                    resp = v1_beta2.patch_namespaced_deployment(
+                    name="vynd-chatops",
+                    namespace="default",
+                    body=body
+                    )
+                    return sendUpdateddDeploymentImage(channel_id,"Updated deployment image latest ==> "+image)
+                except:
+                    return sendUpdateddDeploymentImage(channel_id, "deployment "+dep_id+ " n'existe pas")
+
+        if action.upper() in DESCRIBE:
+            if len(tokens) > 1:
+                dep_id = tokens[1]
+                try:
+                    api_response = app_v1.read_namespaced_deployment(dep_id, "default")
+                    return sedDeploymentDescription(channel_id,ToYaml(api_response.metadata)),sedDeploymentDescription(channel_id,ToYaml(api_response.spec.template.spec)),sedDeploymentDescription(channel_id,ToYaml(api_response.status))
+                except:
+                    return sedDeploymentDescription(channel_id,"deployment "+dep_id+ " n'existe pas")
+        if action.upper() in SCALE:
+            if len(tokens) > 2:
+                dep_id = tokens[1]
+                test=False
+                try:
+                    scale_num=int(tokens[2])
+                    test=True
+                except:
+                    return sedDeploymentDescription(channel_id, "erruer: vous devez saisir un entier !!!")
+                if test:
+                    try:
+                        api_response = app_v1.read_namespaced_deployment(dep_id, "default")
+                        body = api_response
+                        body.spec.replicas = scale_num
+                        v1_beta2.patch_namespaced_deployment(name=dep_id,namespace="default",body=body)
+                        return sedDeploymentDescription(channel_id, "Updated scale for  " + dep_id + " to " + str(scale_num))
+                    except:
+                        return sedDeploymentDescription(channel_id, "deployment " + dep_id + " n'existe pas")
+
         return sendHelpMessage(channel_id, False)
 """message type """
 def sendHelpMessage(channel_id, indr):
@@ -190,7 +265,48 @@ def sendHelpMessage(channel_id, indr):
 
     return sendMessageToSlack(channel_id, "Help" if indr else "Ops", blocks)
 
+def sendDeletedDeployment(channel_id,text):
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                            text
+                )
+            }
+        }
+    ]
 
+
+    return sendMessageToSlack(channel_id, "", blocks)
+
+def sendUpdateddDeploymentImage(channel_id, text):
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        text
+                    )
+                }
+            }
+        ]
+        return sendMessageToSlack(channel_id, "", blocks)
+def sedDeploymentDescription(channel_id, result):
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "```" + result + "```"
+                )
+            }
+        }
+    ]
+    return sendMessageToSlack(channel_id, "", blocks)
 def sendLogsOfPod(channel_id, log_str):
 
     blocks = [
@@ -299,7 +415,7 @@ def sendMessageToSlack(channel_id, text, blocks):
     }
 """kubernetes confiq and auth"""
 def k8s_configuration():
-    eks = auth.EKSAuth(cluster_id=CLUSTER_NAME,region='eu-west-1')
+    eks = auth.EKSAuth(cluster_id=CLUSTER_NAME)
     token = eks.get_token()
 
     # Configure
@@ -311,7 +427,9 @@ def k8s_configuration():
     api = client.ApiClient(configuration)
     v1 = client.CoreV1Api(api)
     v1_beta = client.AppsV1beta1Api(api)
-    return v1, v1_beta
+    api_v1=client.AppsV1Api(api)
+    v1_beta2 = client.AppsV1beta2Api(api)
+    return v1, v1_beta, api_v1, v1_beta2
 """clean text """
 def cleanInput(text):
     returned_text = text.replace("mta3 el ", "")
@@ -323,6 +441,25 @@ def cleanInput(text):
     returned_text = returned_text.replace("la  ", "")
     returned_text = returned_text.replace("le  ", "")
     return returned_text
+
+def removeNone(d):
+    for key, value in list(d.items()):
+        if value is None:
+            del d[key]
+        if isinstance(value, dict):
+            removeNone(value)
+        elif isinstance(value, list):
+            for dic in value:
+                if isinstance(dic, str):
+                    pass
+                else:removeNone(dic)
+    return d
+def ToYaml(api_response):
+    jsonStr = MyEncoder().encode(api_response)
+    jsonStr = removeNone(json.loads(jsonStr))
+    jsonStr = json.dumps(jsonStr)
+    return str(yaml.safe_dump(yaml.safe_load(jsonStr)))
+
 if __name__ == "__main__":
     logger = logging.getLogger()
 
